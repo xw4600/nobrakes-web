@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>No Brakes - Web Edition</title>
+<style>
+  :root {
+    --bg: #000;
+    --green: #33ff66;
+    --amber: #ffb000;
+    --red: #ff4444;
+    --cyan: #00ffff;
+    --text: #e6ffe6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0a0f0a radial-gradient(circle at 50% 20%, #123016 0%, #000 70%);
+    color: var(--text);
+    font-family: "Courier New", Courier, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    user-select: none;
+    overflow-x: hidden;
+  }
+  header {
+    text-align: center;
+    margin: 18px 10px 10px;
+  }
+  header h1 {
+    font-size: 28px;
+    letter-spacing: 4px;
+    margin: 0;
+    color: var(--green);
+    text-shadow: 0 0 8px rgba(51,255,102,.6);
+  }
+  header p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: #9fca9f;
+    letter-spacing: 1px;
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    max-width: 680px;
+    padding: 0 10px;
+    display: flex;
+    justify-content: center;
+  }
+  canvas {
+    background: #000;
+    border: 4px solid var(--green);
+    box-shadow: 0 0 30px rgba(51,255,102,.35), inset 0 0 40px rgba(51,255,102,.08);
+    image-rendering: pixelated;
+    max-width: 100%;
+    touch-action: none;
+  }
+  .controls {
+    max-width: 680px;
+    margin: 14px auto 30px;
+    padding: 0 12px;
+    text-align: center;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #bcdcbc;
+  }
+  .controls b { color: var(--green); }
+  .controls .key {
+    display: inline-block;
+    border: 1px solid #3a6a3a;
+    border-radius: 3px;
+    padding: 0 5px;
+    background: #102210;
+    color: var(--green);
+    font-weight: bold;
+  }
+  .touchbar {
+    max-width: 680px;
+    width: 100%;
+    margin: 0 auto 20px;
+    padding: 0 12px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .touchbtn {
+    font-family: inherit;
+    font-size: 18px;
+    padding: 12px 16px;
+    min-width: 72px;
+    background: #102210;
+    color: var(--green);
+    border: 2px solid var(--green);
+    border-radius: 6px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .touchbtn:active { background: var(--green); color: #000; }
+  footer {
+    font-size: 11px;
+    color: #6f8f6f;
+    text-align: center;
+    padding: 0 12px 20px;
+  }
+  footer a { color: var(--green); }
+</style>
+</head>
+<body>
+<header>
+  <h1>NO BRAKES</h1>
+  <p>a web tribute · originally by Nad 12/1/1999</p>
+</header>
+
+<div class="stage">
+  <canvas id="game" width="480" height="360"></canvas>
+</div>
+
+<div class="controls">
+  <span class="key">←</span> / <span class="key">→</span> move &nbsp;
+  <span class="key">↑</span> / <span class="key">Space</span> fire &nbsp;
+  <span class="key">Enter</span> pause &nbsp;
+  <span class="key">Esc</span> boss key &nbsp;
+  <span class="key">M</span> menu
+</div>
+
+<div class="touchbar">
+  <button class="touchbtn" data-act="left">◀</button>
+  <button class="touchbtn" data-act="fire">▲</button>
+  <button class="touchbtn" data-act="right">▶</button>
+</div>
+
+<footer>
+  From the QBASIC source <b>NOBRAKES.BAS</b> &middot; <a href="https://hammer.prohosting.com/~nobrakes/" target="_blank" rel="noopener">hammer.prohosting.com/~nobrakes/</a>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+
+  // ---- Layout metrics (approximating the original CGA-style text field) ----
+  const FIELD_LEFT = 60;      // left play wall
+  const FIELD_RIGHT = W - 60; // right play wall
+  const FIELD_TOP = 30;
+  const FIELD_BOTTOM = H - 30;
+  const PLAYER_Y = FIELD_BOTTOM - 12; // row the player sits on
+
+  // ---- Game state ----
+  let screen = "menu";        // menu | instructions | about | game | paused | gameover | boss
+  let menuSel = 0;            // 0=Play, 1=Instructions, 2=About, 3=Quit
+  let menuArrow = 0;          // arrow animation tick
+  let score = 0;
+  let ammo = 0;
+  let ammoMax = 50;
+  let level = 1;
+  let enemiesPassed = 0;
+  let started = false;
+  let readyTick = 0;
+  let frame = 0;
+  let running = false;
+
+  const player = { x: (FIELD_LEFT + FIELD_RIGHT) / 2 };
+  const bullets = [];        // {x, y}
+  const bushes = [];         // {x, y, speed}
+  const cycles = [];         // {x, y, speed}
+  const cars = [];           // {x, y, speed}
+
+  // ---- Input ----
+  const keys = {};
+  let justPressed = {};      // single-tick action flags
+  let cheatBuf = "";
+
+  // ---- Random helpers (deterministic-ish for feel) ----
+  function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+  // ---- Text drawing helpers ----
+  function font(size) { return size + "px 'Courier New', Courier, monospace"; }
+
+  // Draw the big "NO BRAKES" block letters used on the title.
+  // Each letter drawn from 5x7 bitmap-ish cells with green outlines.
+  const NO_BRAKES = [
+    // N
+    [[1,1,1,1,1],[1,0,0,0,1],[1,1,0,0,1],[1,0,1,0,1],[1,0,0,1,1],[1,0,0,0,1],[1,0,0,0,1]],
+    // O
+    [[0,0,1,1,0],[0,1,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,0,0,1],[0,0,1,1,0]],
+    // B
+    [[1,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,1,1,1,0]],
+    // R
+    [[1,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,1,1,1,0],[1,0,1,0,0],[1,0,0,1,0],[1,0,0,0,1]],
+    // A
+    [[0,0,1,1,0],[0,1,0,0,1],[1,0,0,0,1],[1,1,1,1,1],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1]],
+    // K
+    [[1,0,0,0,1],[1,0,0,1,0],[1,0,1,0,0],[1,1,0,0,0],[1,0,1,0,0],[1,0,0,1,0],[1,0,0,0,1]],
+    // E
+    [[1,1,1,1,1],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,0],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,1]],
+    // S
+    [[1,1,1,1,1],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,1],[0,0,0,0,1],[0,0,0,0,1],[1,1,1,1,1]],
+  ];
+
+  function drawBlockLetter(bm, x, y, cell, color) {
+    ctx.fillStyle = color;
+    for (let r = 0; r < bm.length; r++) {
+      for (let c = 0; c < bm[r].length; c++) {
+        if (bm[r][c]) ctx.fillRect(x + c * cell, y + r * cell, cell, cell);
+      }
+    }
+  }
+
+  function drawTitle(x, y, cell) {
+    // letters N O B R A K E S, spacing of 1 cell between
+    const step = 6 * cell;
+    drawBlockLetter(NO_BRAKES[0], x, y, cell, "#33ff66");
+    drawBlockLetter(NO_BRAKES[1], x + step, y, cell, "#33ff66");
+    drawBlockLetter(NO_BRAKES[2], x + step * 2, y, cell, "#ffb000");
+    drawBlockLetter(NO_BRAKES[3], x + step * 3, y, cell, "#ffb000");
+    drawBlockLetter(NO_BRAKES[4], x + step * 4, y, cell, "#ffb000");
+    drawBlockLetter(NO_BRAKES[5], x + step * 5, y, cell, "#33ff66");
+    drawBlockLetter(NO_BRAKES[6], x + step * 6, y, cell, "#33ff66");
+    drawBlockLetter(NO_BRAKES[7], x + step * 7, y, cell, "#33ff66");
+  }
+
+  function write(text, x, y, size, color, align) {
+    ctx.font = font(size);
+    ctx.fillStyle = color || "#33ff66";
+    ctx.textAlign = align || "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(text, x, y);
+  }
+
+  // ---- Menu drawing ----
+  function drawMenu() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+
+    // walls
+    ctx.fillStyle = "#33ff66";
+    ctx.fillRect(FIELD_LEFT - 2, FIELD_TOP, 2, FIELD_BOTTOM - FIELD_TOP);
+    ctx.fillRect(FIELD_RIGHT, FIELD_TOP, 2, FIELD_BOTTOM - FIELD_TOP);
+    ctx.fillRect(FIELD_LEFT - 2, FIELD_BOTTOM - 2, FIELD_RIGHT - FIELD_LEFT + 4, 2);
+    // menu box
+    ctx.strokeStyle = "#33ff66";
+    ctx.strokeRect(120, 120, 240, 160);
+
+    drawTitle(146, 20, 4);
+
+    // menu items
+    const items = ["Play", "Instructions", "About", "Quit"];
+    const ys = [150, 180, 210, 240];
+    menuArrow = (menuArrow + 1) % 8;
+    for (let i = 0; i < items.length; i++) {
+      // highlight selected
+      ctx.fillStyle = (i === menuSel) ? "#1b3a1b" : "#000";
+      ctx.fillRect(130, ys[i] - 4, 220, 22);
+      if (i === menuSel) {
+        if (menuArrow < 4) write(">", 138, ys[i], 16, "#ffb000");
+      }
+      write(items[i], 160, ys[i], 16, (i === menuSel) ? "#ffffff" : "#33ff66");
+    }
+  }
+
+  function drawInstructions() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = "#33ff66";
+    ctx.strokeRect(20, 20, W - 40, H - 40);
+    write("HOW TO PLAY:", 40, 40, 16, "#ffb000");
+    const lines = [
+      "left key  - move left",
+      "right key - move right",
+      "up key    - fire",
+      "enter key - pause",
+      "escape    - boss key",
+      "",
+      "OBJECT:",
+      "Avoid obstacles and rack up",
+      "points. You have no brakes so",
+      "you can only dodge and blast",
+      "your way to safety.",
+      "",
+      "You get points for passing",
+      "objects but no points for",
+      "shooting them.",
+    ];
+    let y = 80;
+    for (const l of lines) { write(l, 40, y, 13, "#33ff66"); y += 18; }
+    write("Press ESC to return", 40, H - 45, 12, "#9fca9f");
+  }
+
+  function drawAbout() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+    const lines = [
+      "Do you remember when, you could fit a game on one low density",
+      "5 1/4 floppy disk, and you could play it right off that disk?",
+      "When computers had 10 meg hard disks and CGA monitors?",
+      "Before mega chain stores like Comp USA were around, you could",
+      "go to a local computer store and find a couple of shareware",
+      "disks for a few bucks?  I do.",
+      "I was very young then, but it was a part of my childhood that",
+      "I will never forget. Most of those games were ten times better",
+      "than anything today. They didn't have the fancy graphics and",
+      "sound, but they had great gameplay. That doesn't exist in",
+      "today's games. Except for a few games, it just isn't there.",
+      "I'd choose the 8-bit games of the 80's over Nintendo 64 or",
+      "Dreamcast any day.",
+      "",
+      "              - Nad",
+      "              bmxnad@usa.net",
+      "      http://hammer.prohosting.com/~nobrakes/",
+    ];
+    ctx.strokeStyle = "#33ff66";
+    ctx.strokeRect(10, 10, W - 20, H - 20);
+    let y = 24;
+    for (const l of lines) { write(l, 16, y, 12, "#33ff66"); y += 18; }
+    write("Press ESC to return", 16, H - 28, 12, "#9fca9f");
+  }
+
+  // ---- Game field ----
+  function drawField() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+    // walls
+    ctx.fillStyle = "#33ff66";
+    ctx.fillRect(FIELD_LEFT - 2, FIELD_TOP, 2, FIELD_BOTTOM - FIELD_TOP);
+    ctx.fillRect(FIELD_RIGHT, FIELD_TOP, 2, FIELD_BOTTOM - FIELD_TOP);
+    ctx.fillRect(FIELD_LEFT - 2, FIELD_BOTTOM - 2, FIELD_RIGHT - FIELD_LEFT + 4, 2);
+  }
+
+  // ---- Enemy drawing ----
+  function drawBush(b) {
+    ctx.fillStyle = "#228b22";
+    ctx.fillRect(b.x - 6, b.y, 12, 5);
+    ctx.fillRect(b.x - 3, b.y - 4, 6, 4);
+    ctx.fillStyle = "#2ecc40";
+    ctx.fillRect(b.x - 5, b.y - 1, 10, 2);
+  }
+  function drawCycle(c) {
+    ctx.fillStyle = "#00aeef";
+    ctx.fillRect(c.x - 2, c.y, 4, 6);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(c.x - 4, c.y + 5, 2, 2);
+    ctx.fillRect(c.x + 2, c.y + 5, 2, 2);
+  }
+  function drawCar(c) {
+    ctx.fillStyle = "#ff5555";
+    ctx.fillRect(c.x - 8, c.y, 16, 7);
+    ctx.fillRect(c.x - 5, c.y - 3, 10, 3);
+    ctx.fillStyle = "#ffff00";
+    ctx.fillRect(c.x - 8, c.y - 1, 3, 2);
+    ctx.fillRect(c.x + 5, c.y - 1, 3, 2);
+  }
+
+  // ---- Bullet drawing ----
+  function drawBullet(b) {
+    ctx.fillStyle = "#00ffff";
+    ctx.fillRect(b.x - 1, b.y, 2, 6);
+  }
+
+  function drawPlayer() {
+    ctx.fillStyle = "#ffff33";
+    ctx.fillRect(player.x - 4, PLAYER_Y, 8, 4);
+    ctx.fillRect(player.x - 3, PLAYER_Y - 3, 6, 3);
+  }
+
+  // ---- HUD ----
+  function drawHUD() {
+    write("Score: " + score, FIELD_LEFT + 10, 6, 13, "#ffb000");
+    write("Ammo: " + ammo + "/" + ammoMax, W/2, 6, 13, "#00ffff");
+    write("Level " + level, FIELD_RIGHT - 60, 6, 13, "#33ff66");
+  }
+
+  // ---- Enemy spawn/reset helpers ----
+  function resetBush(x) {
+    bushes.length = 0;
+    bushes.push({ x: x != null ? x : rand(FIELD_LEFT + 8, FIELD_RIGHT - 8), y: 1, speed: 1 });
+  }
+  function resetCycle(x) {
+    cycles.length = 0;
+    cycles.push({ x: x != null ? x : rand(FIELD_LEFT + 8, FIELD_RIGHT - 8), y: 1, speed: 1.6 });
+  }
+  function resetCar(x) {
+    cars.length = 0;
+    cars.push({ x: x != null ? x : rand(FIELD_LEFT + 12, FIELD_RIGHT - 12), y: 1, speed: 2.3 });
+  }
+
+  // ---- New game ----
+  function newGame() {
+    score = 0;
+    ammo = ammoMax;
+    level = 1;
+    enemiesPassed = 0;
+    bullets.length = 0;
+    resetBush();
+    resetCycle();
+    resetCar();
+    player.x = (FIELD_LEFT + FIELD_RIGHT) / 2;
+    started = false;
+    readyTick = 0;
+    cheatBuf = "";
+    screen = "game";
+  }
+
+  // ---- collision ----
+  function collide(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  // ---- enemy movement + scoring ----
+  function moveEnemies() {
+    // BUSH
+    for (const b of bushes) b.y += b.speed;
+    // CYCLE
+    for (const c of cycles) c.y += c.speed;
+    // CAR
+    for (const c of cars) c.y += c.speed;
+
+    // Ensure enemies keep respawning if all passed / removed
+    if (bushes.length === 0) { const b = { x: rand(FIELD_LEFT + 8, FIELD_RIGHT - 8), y: 1, speed: 1 }; bushes.push(b); }
+    if (cycles.length === 0) { const c = { x: rand(FIELD_LEFT + 8, FIELD_RIGHT - 8), y: 1, speed: 1.6 }; cycles.push(c); }
+    if (cars.length === 0) { const c = { x: rand(FIELD_LEFT + 12, FIELD_RIGHT - 12), y: 1, speed: 2.3 }; cars.push(c); }
+
+    // Check pass (score) or collision with player, one per type per pass
+    for (let i = bushes.length - 1; i >= 0; i--) {
+      const b = bushes[i];
+      if (b.y > PLAYER_Y) {
+        if (collide(player.x - 4, PLAYER_Y - 3, 8, 7, b.x - 6, b.y - 4, 12, 9) && started) {
+          return gameOver();
+        }
+        score += 1;
+        enemiesPassed++;
+        if (ammo < ammoMax) ammo += 2;
+        if (ammo > ammoMax) ammo = ammoMax;
+        bushes.splice(i, 1);
+      }
+    }
+    for (let i = cycles.length - 1; i >= 0; i--) {
+      const c = cycles[i];
+      if (c.y > PLAYER_Y) {
+        if (collide(player.x - 4, PLAYER_Y - 3, 8, 7, c.x - 4, c.y, 8, 7) && started) {
+          return gameOver();
+        }
+        score += 2;
+        enemiesPassed++;
+        if (ammo < ammoMax) ammo += 2;
+        if (ammo > ammoMax) ammo = ammoMax;
+        cycles.splice(i, 1);
+      }
+    }
+    for (let i = cars.length - 1; i >= 0; i--) {
+      const c = cars[i];
+      if (c.y > PLAYER_Y) {
+        if (collide(player.x - 4, PLAYER_Y - 3, 8, 7, c.x - 8, c.y - 3, 16, 10) && started) {
+          return gameOver();
+        }
+        score += 3;
+        enemiesPassed++;
+        if (ammo < ammoMax) ammo += 2;
+        if (ammo > ammoMax) ammo = ammoMax;
+        cars.splice(i, 1);
+      }
+    }
+
+    // next level every 100 enemies
+    level = Math.floor(enemiesPassed / 100) + 1;
+
+    // respawn immediately (spawned after deletion above via the length checks,
+    // but those only fire when array is empty; ensure a constant stream)
+  }
+
+  // ---- bullets ----
+  function moveBullets() {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      b.y -= 5;
+      // off top?
+      if (b.y < FIELD_TOP) { bullets.splice(i, 1); continue; }
+      // check hit bush
+      let hit = -1;
+      for (let j = bushes.length - 1; j >= 0; j--) {
+        const e = bushes[j];
+        if (collide(b.x - 1, b.y, 2, 6, e.x - 6, e.y - 4, 12, 9)) { hit = "bush"; };
+      }
+      if (hit === "bush") { bullets.splice(i, 1); continue; }
+      for (let j = cycles.length - 1; j >= 0; j--) {
+        const e = cycles[j];
+        if (collide(b.x - 1, b.y, 2, 6, e.x - 4, e.y, 8, 7)) { hit = "cycle"; };
+      }
+      if (hit === "cycle") { bullets.splice(i, 1); continue; }
+      for (let j = cars.length - 1; j >= 0; j--) {
+        const e = cars[j];
+        if (collide(b.x - 1, b.y, 2, 6, e.x - 8, e.y - 3, 16, 10)) { hit = "car"; };
+      }
+      if (hit === "car") { bullets.splice(i, 1); continue; }
+    }
+  }
+
+  function fire() {
+    if (ammo <= 0) return;
+    bullets.push({ x: player.x, y: PLAYER_Y - 4 });
+    ammo--;
+  }
+
+  function gameOver() {
+    screen = "gameover";
+    running = false;
+  }
+
+  // ---- player movement ----
+  function movePlayer() {
+    if (justPressed.ArrowLeft && player.x > FIELD_LEFT + 8) player.x -= 12;
+    if (justPressed.ArrowRight && player.x < FIELD_RIGHT - 8) player.x += 12;
+    if (justPressed.ArrowUp || justPressed[" "]) fire();
+  }
+
+  // ---- main update ----
+  function update() {
+    frame++;
+    if (screen === "game") {
+      if (!started) {
+        readyTick++;
+        if (readyTick > 90) started = true;
+      } else {
+        movePlayer();
+        moveBullets();
+        moveEnemies();
+      }
+    }
+  }
+
+  // ---- render ----
+  function render() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+
+    if (screen === "menu") {
+      drawMenu();
+    } else if (screen === "instructions") {
+      drawInstructions();
+    } else if (screen === "about") {
+      drawAbout();
+    } else if (screen === "boss") {
+      window.getSelection ? window.getSelection().removeAllRanges() : null;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#000";
+      write("Quarterly Report", 60, 60, 18, "#000");
+      write("spreadsheet.xlsx  -  Q3 figures", 60, 100, 13, "#222");
+      write("memorandum.doc  -  staff meeting", 60, 122, 13, "#222");
+      write("budget_2026.xls  -  Q4 draft", 60, 144, 13, "#222");
+      write("(Esc to return)", 60, H - 40, 11, "#666");
+    } else if (screen === "game" || screen === "paused" || screen === "gameover") {
+      drawField();
+      drawHUD();
+      for (const b of bullets) drawBullet(b);
+      for (const b of bushes) drawBush(b);
+      for (const c of cycles) drawCycle(c);
+      for (const c of cars) drawCar(c);
+      drawPlayer();
+
+      if (!started && screen === "game") {
+        const phases = ["READY....", "", "SET....", "", "GO!!!"];
+        const idx = Math.min(4, Math.floor(readyTick / 18));
+        if (phases[idx]) write(phases[idx], W / 2 - 40, H / 2 - 10, 20, "#33ff66");
+      }
+      if (screen === "paused") {
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(0, 0, W, H);
+        write("PAUSED", W / 2 - 40, H / 2 - 12, 22, "#ffb000");
+      }
+      if (screen === "gameover") {
+        ctx.fillStyle = "rgba(0,0,0,0.65)";
+        ctx.fillRect(0, 0, W, H);
+        write("GAME OVER", W / 2 - 70, H / 2 - 40, 28, "#ff4444");
+        write("Score: " + score, W / 2 - 40, H / 2, 18, "#33ff66");
+        write("Again (Y/N)?", W / 2 - 55, H / 2 + 30, 16, "#ffb000");
+      }
+    }
+  }
+
+  // ---- input handling ----
+  function handleGlobalKey(e) {
+    if (screen === "menu") {
+      if (e.key === "ArrowDown") { e.preventDefault(); menuSel = (menuSel + 1) % 4; }
+      else if (e.key === "ArrowUp") { e.preventDefault(); menuSel = (menuSel + 3) % 4; }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        if (menuSel === 0) newGame();
+        else if (menuSel === 1) screen = "instructions";
+        else if (menuSel === 2) screen = "about";
+        else if (menuSel === 3) screen = "boss";
+      }
+    } else if (screen === "instructions" || screen === "about") {
+      if (e.key === "Escape") { e.preventDefault(); screen = "menu"; }
+    } else if (screen === "boss") {
+      if (e.key === "Escape") { e.preventDefault(); screen = "game"; }
+    }
+  }
+
+  // keyboard for game
+  document.addEventListener("keydown", (e) => {
+    // cheat: type "point"
+    if (screen === "game") {
+      const c = e.key.toLowerCase();
+      if (c.length === 1 && /[a-z]/.test(c)) {
+        cheatBuf = (cheatBuf + c).slice(-5);
+        if (cheatBuf === "point") { score += 100; cheatBuf = ""; }
+      } else {
+        if (e.key === "Escape") { // boss key -> generic work screen
+          e.preventDefault();
+          screen = (screen === "boss") ? "game" : "boss";
+          return;
+        }
+        if (e.key === "Enter") { // pause
+          e.preventDefault();
+          screen = (screen === "paused") ? "game" : "paused";
+          return;
+        }
+        if (e.key.toLowerCase() === "m") { screen = "menu"; return; }
+      }
+    }
+
+    handleGlobalKey(e);
+  });
+
+  // per-tick action flags
+  document.addEventListener("keydown", (e) => {
+    if (["ArrowLeft","ArrowRight","ArrowUp"," ","Enter"].includes(e.key)) {
+      e.preventDefault();
+    }
+    keys[e.key] = true;
+    if (e.key === "ArrowLeft") justPressed.ArrowLeft = true;
+    if (e.key === "ArrowRight") justPressed.ArrowRight = true;
+    if (e.key === "ArrowUp" || e.key === " ") justPressed[" "] = true;
+  });
+  document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+  window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
+
+  // touch buttons
+  const touch = {};
+  document.querySelectorAll(".touchbtn").forEach((btn) => {
+    const act = btn.dataset.act;
+    const down = (e) => { e.preventDefault(); touch[act] = true; };
+    const up = (e) => { e.preventDefault(); touch[act] = false; };
+    btn.addEventListener("touchstart", down);
+    btn.addEventListener("touchend", up);
+    btn.addEventListener("touchcancel", up);
+    btn.addEventListener("mousedown", down);
+    btn.addEventListener("mouseup", up);
+    btn.addEventListener("mouseleave", up);
+  });
+
+  // emulate justPressed edge detection each frame using touch/keys
+  function computeEdges() {
+    justPressed = {};
+    if (touch.left) justPressed.ArrowLeft = true;
+    if (touch.right) justPressed.ArrowRight = true;
+    if (touch.fire) justPressed[" "] = true;
+    if (keys.ArrowLeft) justPressed.ArrowLeft = true;
+    if (keys.ArrowRight) justPressed.ArrowRight = true;
+    if (keys.ArrowUp || keys[" "]) justPressed[" "] = true;
+  }
+
+  // ---- loop ----
+  function loop() {
+    computeEdges();
+    update();
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // fill ammo display; give ammo as they pass enemies? Original gives limited ammo.
+  // We'll start with 50 and gain +10 per 20 passed.
+  loop();
+
+  // initial screen
+  screen = "menu";
+})();
+</script>
+</body>
+</html>
